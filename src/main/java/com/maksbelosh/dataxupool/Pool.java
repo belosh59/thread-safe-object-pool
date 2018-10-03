@@ -1,5 +1,6 @@
 package com.maksbelosh.dataxupool;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 public interface Pool<R> {
@@ -26,11 +27,12 @@ public interface Pool<R> {
      * If a resource cannot be acquired within the timeout
      * interval specified in the acquire(long, TimeUnit) method,
      * either a null can be returned or an exception can be thrown.
+     * // TODO: TODO: Figure out requirement -if I'm able to return Optioanl instead of null
      * @param timeout
      * @param timeUnit
      * @return
      */
-    R acquire(long timeout, TimeUnit timeUnit);
+    Optional<R> acquire(long timeout, TimeUnit timeUnit);
 
     /**
      * Resources can be released at any time.
@@ -40,8 +42,8 @@ public interface Pool<R> {
 
     /**
      * The add(R) method return true if the pool
-     was modified as a result of the method call or false if
-     the pool was not modified.
+     * was modified as a result of the method call or false if the pool was not modified.
+     * It is possible to add resources when pool is not opened or it is closes
      * @param resource
      * @return
      */
