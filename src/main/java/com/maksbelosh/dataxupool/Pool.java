@@ -2,7 +2,7 @@ package com.maksbelosh.dataxupool;
 
 import java.util.concurrent.TimeUnit;
 
-public interface ObjectPool<R> {
+public interface Pool<R> {
 
     /**
      * The pool shall not allow any resource to be acquired unless the pool is open.
@@ -12,27 +12,25 @@ public interface ObjectPool<R> {
     boolean isOpen();
 
     /**
-     * The close() method should be such that it blocks until
-     all acquired resources are released.
+     * The close() method blocks current thread until all acquired resources are released.
      */
     void close();
 
     /**
-     * The acquire() method should block until a resource is available.
+     * The acquire() method block until a resource is available.
      * @return
      */
     R acquire();
 
     /**
      * If a resource cannot be acquired within the timeout
-     interval specified in the acquire(long, TimeUnit) method,
-     either a null can be returned or an exception can be
-     thrown.
+     * interval specified in the acquire(long, TimeUnit) method,
+     * either a null can be returned or an exception can be thrown.
      * @param timeout
      * @param timeUnit
      * @return
      */
-    R accquire(long timeout, TimeUnit timeUnit);
+    R acquire(long timeout, TimeUnit timeUnit);
 
     /**
      * Resources can be released at any time.
@@ -51,10 +49,10 @@ public interface ObjectPool<R> {
 
     /**
      * The remove(R) methods return true if the pool
-     was modified as a result of the method call or false if
-     the pool was not modified. If the resource
-     that is being removed is currently in use, the remove
-     operation will block until that resource has been released.
+     * was modified as a result of the method call or false if
+     * the pool was not modified. If the resource
+     * that is being removed is currently in use, the remove
+     * operation will block until that resource has been released.
      * @param resource
      * @return
      */
