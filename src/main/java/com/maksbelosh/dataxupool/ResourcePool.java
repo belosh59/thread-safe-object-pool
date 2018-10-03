@@ -10,23 +10,27 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Used CopyOnWriteArrayList to exclude fail-fast iteration problems
- * get concurrent modification abilities
- * and avoid multiple structures handling via queues, etc.
- * @param <R>
+ * get concurrent modification abilities and avoid multiple structures handling via queues, etc.
+ *
+ * Current implementation synchronized over List and ResourceWrapper,
+ * It do not synchronized over specific resource in order to avoid side affect on consumer side of th pool
+ *
+ * @param <R> - resource Type
  */
+
 
 public class ResourcePool<R> implements Pool<R> {
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
-    private volatile boolean isPoolClosed = true; // On creation pool by default closed
+    private volatile boolean poolClosed = true; // On creation pool by default closed
     private final List<ResourceWrapper<R>> resourceWrappers = new CopyOnWriteArrayList<>();
 
     public void open() {
-        isPoolClosed = false;
+        poolClosed = false;
     }
 
     public boolean isOpen() {
-        return !isPoolClosed;
+        return !poolClosed;
     }
 
     public void close() {
@@ -37,53 +41,69 @@ public class ResourcePool<R> implements Pool<R> {
     }
 
     public void closeNow() {
-        isPoolClosed = true;
+        poolClosed = true;
     }
 
-    public synchronized R acquire() {
-        if(isPoolClosed) {
+    public R acquire() {
+        if(poolClosed) {
             throw new IllegalStateException("Object pool closes");
         }
 
         synchronized (resourceWrappers) {
             while (true) { // Prevent suspicious wakeup of the thread
                 for (ResourceWrapper<R> resourceWrapper : resourceWrappers) {
-                    if (!resourceWrapper.isAcquired()) {
-                        resourceWrapper.setAcquired(true);
-                        return resourceWrapper.getResource();
+                    if (!resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) {
+
+                        // double lock check to ensure not one removes while acquire
+                        synchronized (resourceWrapper) {
+                            if (!resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) {
+                                resourceWrapper.setAcquired(true);
+                                return resourceWrapper.getResource();
+                            }
+                        }
                     }
                 }
                 try {
                     logger.debug("Thread is waiting for free resource");
                     resourceWrappers.wait();
-                    logger.debug("Thread was notified about free resource");
+                    logger.debug("Thread was notified about allocated resource");
 
                 } catch (InterruptedException e) {
-                    logger.debug("Waiting tread has bean interrupted");
-                    throw new RuntimeException("Waiting tread has bean interrupted", e);
+                    logger.debug("Waiting thread has bean interrupted");
+                    throw new RuntimeException("Waiting thread has bean interrupted", e);
                 }
             }
         }
     }
 
     public Optional<R> acquire(long timeout, TimeUnit timeUnit) {
-        if(isPoolClosed) {
+        if(poolClosed) {
             throw new IllegalStateException("Object pool closed");
         }
 
+        // we should synchronize readers because each reader should get unique resource
         synchronized (resourceWrappers) {
             long overallTimeout = timeUnit.convert(timeout, TimeUnit.MILLISECONDS);
             long outTime = System.currentTimeMillis() + overallTimeout;
 
-            while (System.currentTimeMillis() < outTime) { // Prevent suspicious wakeup of the thread and go out only on timeout
+            while (System.currentTimeMillis() < outTime) { // Prevent suspicious wakeup of the thread and go out before timeout
                 for (ResourceWrapper<R> resourceWrapper : resourceWrappers) {
                     if (!resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) { // Check both cases for resources
-                        resourceWrapper.setAcquired(true);
-                        return Optional.of(resourceWrapper.getResource());
+
+                        // double lock check to ensure not one removes while acquire
+                        synchronized (resourceWrapper) {
+                            if(!resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) {
+                                resourceWrapper.setAcquired(true);
+                                logger.debug("Resource acquired in terms of timeout");
+                                return Optional.of(resourceWrapper.getResource());
+                            }
+                        }
                     }
                 }
                 try {
+                    logger.debug("Thread starts waiting for resource during timeout - {} {}", timeout, timeUnit);
                     resourceWrappers.wait(overallTimeout);
+                    logger.debug("Thread wake up from wait in timeout");
                 } catch (InterruptedException e) {
                     throw new RuntimeException("Waiting tread has bean interrupted: " +
                             Thread.currentThread().getName(), e);
@@ -98,11 +118,14 @@ public class ResourcePool<R> implements Pool<R> {
         if (resourceWrapperOptional.isPresent()) {
             ResourceWrapper<R> resourceWrapper = resourceWrapperOptional.get();
             resourceWrapper.setAcquired(false);
+
+            // Notification for acquire method
             synchronized (resourceWrappers) {
-                resourceWrappers.notify(); // Notification for acquire method
+                resourceWrappers.notify();
             }
-            synchronized (resourceWrapper.getResource()) {
-                resourceWrapper.getResource().notifyAll(); // Notification for remove/close method that resource is available
+            // Notification for remove/close method that resource is available
+            synchronized (resourceWrapper) {
+                resourceWrapper.notifyAll();
             }
         }
     }
@@ -110,14 +133,14 @@ public class ResourcePool<R> implements Pool<R> {
     public boolean add(R resource) {
         synchronized (resourceWrappers) { // Prevent simultaneous add operations. No block with acquire WAIT_LIST threads
             // Ensure no duplicates
-            Optional<ResourceWrapper<R>> resourceWrapperOptional = getWrapper(resource);
+            Optional<ResourceWrapper<R>> resourceWrapperOptional = getWrapper(resource); // contains impossible because of wrappers
             if (resourceWrapperOptional.isPresent()) {
                 return false;
             }
 
             ResourceWrapper<R> resourceWrapper = new ResourceWrapper<>(resource);
             boolean result = resourceWrappers.add(resourceWrapper);
-            resourceWrappers.notify();
+            resourceWrappers.notify(); // Notify acquire WAIT-LIST about new resource
             return result;
         }
     }
@@ -129,12 +152,14 @@ public class ResourcePool<R> implements Pool<R> {
         }
 
         ResourceWrapper<R> resourceWrapper = resourceWrapperOptional.get();
-        if (!resourceWrapper.isRemoved) { // require verification
-            resourceWrapper.setRemoved(true); // prevent acquire while remove in progress
-            waitOnTheResource(resourceWrapper);
-            return resourceWrappers.remove(resourceWrapper);
-        } else {
-            return false;
+        synchronized(resourceWrapper) {
+            if (!resourceWrapper.removed) { // require verification
+                resourceWrapper.setRemoved(true); // prevent acquire while remove in progress
+                waitOnTheResource(resourceWrapper);
+                return resourceWrappers.remove(resourceWrapper);
+            } else {
+                return false;
+            }
         }
     }
 
@@ -149,13 +174,12 @@ public class ResourcePool<R> implements Pool<R> {
     }
 
     private void waitOnTheResource(ResourceWrapper<R> resourceWrapper) {
-        // TODO: check if resource was not removed in another thread
-        synchronized (resourceWrapper.getResource()) { // waiting on specified resource monitor
+        synchronized (resourceWrapper) { // waiting on specified resource monitor
             while (resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) {
                 try {
-                    resourceWrapper.getResource().wait();
+                    resourceWrapper.wait();
                 } catch (InterruptedException e) {
-                    throw new RuntimeException("Waiting tread has bean interrupted: " +
+                    throw new RuntimeException("Waiting thread has bean interrupted: " +
                             Thread.currentThread().getName(), e);
                 }
             }
@@ -168,33 +192,38 @@ public class ResourcePool<R> implements Pool<R> {
                 .findFirst();
     }
 
-    private static class ResourceWrapper<T> {
-        private volatile boolean isAcquired;
-        private volatile boolean isRemoved;
-        private final T resource;
+    // For testing purpose
+    int size() {
+        return resourceWrappers.size();
+    }
 
-        ResourceWrapper(T resource) {
+    private static class ResourceWrapper<R> {
+        private volatile boolean acquired;
+        private volatile boolean removed;
+        private final R resource;
+
+        ResourceWrapper(R resource) {
             this.resource = resource;
         }
 
         boolean isAcquired() {
-            return isAcquired;
+            return acquired;
         }
 
         void setAcquired(boolean acquired) {
-            this.isAcquired = acquired;
+            this.acquired = acquired;
         }
 
-        T getResource() {
+        R getResource() {
             return resource;
         }
 
         public boolean isRemoved() {
-            return isRemoved;
+            return removed;
         }
 
         public void setRemoved(boolean removed) {
-            isRemoved = removed;
+            this.removed = removed;
         }
 
         @Override
