@@ -32,7 +32,7 @@ public interface Pool<R> {
      * @param timeUnit - specified units of timeout count
      * @return
      */
-    Optional<R> acquire(long timeout, TimeUnit timeUnit);
+    R acquire(long timeout, TimeUnit timeUnit);
 
     /**
      * Resources can be released at any time.

@@ -140,11 +140,9 @@ public class ResourcePoolTest {
         try {
             gate.await();
 
-            Optional<Resource> optional = resourcePool.acquire(timeOut, TimeUnit.MILLISECONDS);
-            logger.info("Resource retrieved - {}", optional);
-
-            if(optional.isPresent()) {
-                Resource resource = optional.get();
+            Resource resource = resourcePool.acquire(timeOut, TimeUnit.MILLISECONDS);
+            logger.info("Resource retrieved - {}", resource);
+            if (resource != null) {
                 resource.incrementResource();
                 logger.info("Resource incremented");
 

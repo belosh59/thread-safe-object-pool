@@ -76,14 +76,14 @@ public class ResourcePool<R> implements Pool<R> {
         }
     }
 
-    public Optional<R> acquire(long timeout, TimeUnit timeUnit) {
+    public R acquire(long timeout, TimeUnit timeUnit) {
         if(poolClosed) {
             throw new IllegalStateException("Object pool closed");
         }
 
         // we should synchronize readers because each reader should get unique resource
         synchronized (resourceWrappers) {
-            long overallTimeout = timeUnit.convert(timeout, TimeUnit.MILLISECONDS);
+            long overallTimeout = TimeUnit.MILLISECONDS.convert(timeout, timeUnit);
             long outTime = System.currentTimeMillis() + overallTimeout;
 
             while (System.currentTimeMillis() < outTime) { // Prevent suspicious wakeup of the thread and go out before timeout
@@ -95,7 +95,7 @@ public class ResourcePool<R> implements Pool<R> {
                             if(!resourceWrapper.isAcquired() && !resourceWrapper.isRemoved()) {
                                 resourceWrapper.setAcquired(true);
                                 logger.debug("Resource acquired in terms of timeout");
-                                return Optional.of(resourceWrapper.getResource());
+                                return resourceWrapper.getResource();
                             }
                         }
                     }
@@ -110,7 +110,7 @@ public class ResourcePool<R> implements Pool<R> {
                 }
             }
         }
-        return Optional.empty();
+        return null;
     }
 
     public void release(R resource) {
